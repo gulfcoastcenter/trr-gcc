@@ -1,0 +1,1152 @@
+' Main script to batch UA's with the netsmart TXBATCH4 program
+'*****************************************************************************
+'
+' {{{ HEADER
+' Programmer: R.EDEKER
+' Date      : 201102xx
+' Purpose   :
+' TCF       :
+' PARM      :
+'
+' {{{ DOCS
+' CONSTANTS:
+'  - UA_PARM: DEFAULT BATCHING PARMFILE.  PASSING IN A PARMFILE WILL OVERRIDE THIS VALUE
+'  - UA_EMAIL: DEFAULT EMAIL NOTIFICATION.  DEBUG MODE WILL ONLY EMAIL THE CURRENT USER
+'
+'  - UA_BASE: BASE UNIX PATH FOR UA FILES
+'  - UA_ARCH: ARCHIVE SUBDIRECTORY UNDER UA_BASE
+'
+' PARM OPTIONS:
+'  - FTP_SITE: DSHS FTP HOST/IP
+'  - FTP_LOGIN: LOGIN ID
+'  - FTP_PASS: YOUR PASSWORD
+'  - FTP_DIR: INITIAL REMOTE DIRECTORY (DEFAULT: BLANK)
+'  - O_FTP: Y/N - FLAG TO ENABLE FTP MODE
+'  - O_TEST: Y/N - FLAG TO ENABLE TESTING MODE.
+'    **O_TEST IS VERY IMPORTANT TO SET TO Y WHEN TESTING IN ORDER FOR IT TO INCLUDE
+'    **THE TESTING JCL HEADER
+'  - O_EMAIL: ADDRESS TO SEND ALL EMAILS TO IN ADDITION TO THE CURRENT USER AND "UA_EMAIL"
+'
+' **NOTE**:
+' The following parm options are automatically changed by this script during each run:
+'  CLLIST, DATEFROM, DATETHRU, DATERUN, SEQOUT
+'
+' }}}
+'
+' {{{ REVISIONS
+'RLE 20110425
+'  - ftp commands added
+'  - option to cancel processing prior to ftp
+'  - removed discharge date
+'RLE 20110428
+'  - added logic to skip launch/batch if there are no records
+'  - added logic to back out at any point
+'RLE 20110429
+'  - Fixed child ua asmt purpose DST reference
+'RLE 20110714
+'  - added option to check all boxes for exclusion
+'  - restructured flow in _main to use nextdo/case statement
+'  - added constants for JCL header file and test file
+'  - added logic to use a testing JCL header during debug runs
+'RLE 20110811 .002
+'  - add staff credential sync before reading data
+'  - rename UA_PATH to UA_BASE
+'  - add constant UA_ARCH for the archive direrctory under UA_BASE
+'RLE 20110815 .003
+'  - added support for passing in a parmfile.  defaults to UA_PARM
+'  - changed default UA_PARM to TXBUA
+'  - allow a parmfile
+'  - add GetParm support for FTP vars
+'  - archiving
+'  - archive to a unique filename for mutliple runs during a day
+'  - add email recipients.  (constant, from parm, current user)
+'  - add dedicated vars for archive and work files
+'  - cache results from getOpenRecords() until you go back to the main page
+'  - add emailing of FTP dialogue and error messages
+'RLE 20110817 .004
+'  - added _debug var for more flexibility instead of relying on the compiler directive
+'  - cleanup todo list
+'  - add button to clear all checkboxes
+'  - add warning when cancelling from launch form.
+'  - write ftp dialogue (ftp_chat[]) to unix file.  BatchYYMMDD.ftp
+'  - highlight DX Care Date box when the record is too old or hasn't been submitted
+'  - rename b_invertck to b_swap
+'  - restructure test vs production JCL logic to use o_test instead of %debug statements
+'  - new var o_test for test mode.  Determines which JCL to use and defaults to Y during debug
+'  - add $ftp return code to error string
+'  - check for 99 additional batch files for the current day
+'RLE 20110819 .005
+'  - updated saved list name
+'  - only email ftp output if we attempted a FTP
+'  - add headers to the main results page
+'RLE 20110824 .006
+'  - add ALOC to display
+'  - account for record without a UID
+'RLE 20110825 .007
+'  - remove clients from list if they don't have a UID and the box is checked
+'  - add refresh button
+'  - clear b_skip[] array before loading data
+'  - change back to display row with no UID
+'  - only highlight DX care box for non-discharge/crisis UA's
+'  - add logic to remove clients from processing that don't have a UID if the skip box was checked
+'  - added parm/constant documentation to the top of this script
+'  - changed dynamic shell script to remove work file prior to recreating it
+'RLE 20110826 .008
+'  - added saved list option to narrow selection of records
+'RLE 20110907 .009
+'  - added vars for staff on the UA
+'  - added logic to verify they have "ua credentials" for batching to work
+'  - added docs on O_EMAIL parm
+'  - use $uc() in the nextdo select statement for safety
+'  - added checkbox options for ftp and test JCL mode on the main page
+'RLE 20110912 .010
+'  - disable debug for production
+'  v.011
+'  - add error and exit when script is run in character mode
+'  - big brother log_prog()
+'  - basic date validation
+'RLE 20110913 .012
+'  - remove workfile during cleanup
+'  - enable new "A" option for auto-mode
+'    this will automatically skip over the selection screen and use the defaults
+'  - adjust population of to[] for debug mode and to avoid duplication of addresses
+'RLE 20110914 .013
+'  - only email the current operator when in debug mode
+'  - archive last two UA sequential files
+'RLE 20110916 .014
+'  - adjust displayed data:
+'     - removed aloc and valid
+'     - add assessment date
+'     - only show uid for debug mode
+'  - format dates as mm/dd/yy to condense display
+'  - add "no uid" warning in notes column
+'RLE 20111012 .015
+'  - added parmfile in $uscwinbutton() call.
+'    this is necessary if we were using a custom parmfile
+'RLE 20120830 .016
+'  + added d_ProdSys to disable functionality when not in production
+'  ~ change to program TXBATCH5 after 9/1/12
+'RLE 20120904 .017
+'  - Changed TXBATCH5 eff to 9/5/12.
+'RLE 20130114 .018
+'  + added aloc and CARE reg dt to display
+'  - removed UA batch date from display
+'  - added row highlight/click JS
+'RLE 20130116 .019
+'  + skip UA if registration hasn't been batched
+'RLE 20130118 .020
+'  + remove trag staff/date for discharges
+'  + remove deviation/request for adult SP8's.
+'RLE 20130124 .021
+'  - make new color optional, disabled by default
+'  - remove discharge/complete DT columns
+'RLE 20130917 .022
+'  - disable NTST batching
+'  + add support for calling xml_build2 for TRR
+'  + add clinic in display
+'RLE 20130919 .023
+'  + Update of 'SentToCare' date after _xmlgen
+'  + support baby cans
+'  + add logic to skip record when clinic is not filled out (except for crisis)
+'RLE 20131217 .024
+'  - remove old 80-byte batching support
+'  + add FTP
+'  + add info
+' }}}
+' }}}
+
+' ** TODO **
+'  - skip ua records when staff doesn't have credentials
+'  - allow user to continue if the system thinks the script is being run elsewhere (lib_PROCMGR)
+'     - should only allow when they are the user in the file
+'     - and the unix PID does not exist
+'  - look at removing the full path from UA_SEQOUT
+'  - make sure JCL files exist and are readable
+
+'******************************************
+'BE SURE TO ENABLE DEBUG COMPILE DURING TESTING
+'SO IT WILL *DEFAULT* THE TESTING JCL
+'******************************************
+
+'''%debug compile
+
+%define UA_XML_SCR "xml_build2"
+%define d_MaxClientPop 15
+
+%define UA_PARM "TXBTRR"
+%define UA_EMAIL "app-notify@gcmhmr.com"
+'///////////////////////////////////////////////////
+%define UA_BASE "/c0/CMBHS/"
+%define UA_QUEUE "/c0/CMBHS/"
+%define UA_ARCH "/c0/CMBHS/archive/"
+
+%define d_ProdSys "/c0/MIS"
+
+%global err[]
+
+%version 01.0.023 09/19/13 GCC
+
+start CAREBT_UA(parmfile,option)
+   parmfile    is x
+   option      is x
+
+   rc          is b
+   rc_FTP      is b
+   i           is i
+   T           is x
+   class       is x
+   js          is x
+
+   uid[]       is n
+   rtype[]     is x
+   cid[]       is x
+   ua_handle   is i
+   parm        is i
+   proc        is i
+   proc_key    is x
+   ts[]        is n
+   b_skip[]    is x
+   tmp[]       is x
+   err[]       is x
+   tFile       is x
+   txt_shellcmd   is x
+   cmd         is x
+   ftp[]       is x
+   ftp_chat[]  is x
+   out[]       is x
+   trr_date    is d
+
+   work_file   is x
+   arch_path   is x
+   arch_file   is x
+   ptr         is i
+   to[]        is x
+
+   xml-client[]   is x
+   xml-uid[]      is n
+   xml-opt        is x
+   FileOut        is x
+   retcode     is x
+
+   batch_id    is x
+
+   key[]       is x     'key/value for parm update
+   value[]     is x
+   x[]         is x
+   l_unix      is i
+   batch_count is i
+
+   '* generic UA vars for both adult/child see _setAdultUA/_setChildUA
+   ua_rec      is r
+   ua_compd    is d
+   ua_asmtdt   is d
+   ua_caredt   is d
+   ua_pur      is x
+   ua_disdt    is d
+   ua_excld    is x
+   ua_s1       is x
+   ua_s2       is x
+   ua_s3       is x
+   ua_aloc     is x
+   ua_disch    is x
+   ua_request  is x
+   ua_clinic   is x
+   ua_canstype is x
+
+   c.dxrec     is r
+   c.dxdate    is d
+   c.dx.caredt is d
+   s_cred   is x
+   c.reg.sub   is d
+
+   o_dt1       is d
+   o_dt2       is d
+   o_sl        is x
+   o_email     is x
+   o_ftp       is x
+   o_test      is x
+   o_color     is x
+   o_subdate   is x
+
+   nextdo      is x
+   style       is x
+   b_skipall   is x
+   b_clearall  is x
+   b_swap      is x
+   b_refresh   is x
+   b_noproc    is x
+   b_color     is x
+   _debug      is x
+   f_upd       is x
+
+   ftp_site    is x
+   ftp_login   is x
+   ftp_pass    is x
+   ftp_dir     is x
+   test_dir    is x
+
+   parm_add    is x
+   parm_add = "Y"
+
+   _debug = "N"
+   %debugstart
+   _debug = "Y"
+   o_test = "Y"
+   o_ftp  = "N"
+   %debugend
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+"lib_REPORTS":log_prog($scriptid)
+gosub __INIT
+gosub __MAIN
+gosub __EXIT
+
+return
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+__MAIN:
+   gosub _BATCHID
+   if $uc(option) = "A" then nextdo = "READ" endif
+
+   do while 1 = 1
+      if nextdo !dp then nextdo = "MAIN" endif
+
+      select $uc(nextdo)
+         case "MAIN"
+            gosub frm_Main
+            $clear(b_skip[],uid[],rtype[],cid[])
+         case "READ"
+            $brmsg("Searching",1,"C","Please Wait..")
+            gosub _getData
+         case "PROC"
+            if $maxarray(cid[]) > d_MaxClientPop then
+               $brmsg("Generating XML",1,"C","Please Wait..")
+            endif
+            gosub _xmlgen
+            
+            if err[] !dp then
+               gosub _ftp
+
+               if rc_FTP = 0 and err[] !dp and o_subdate = "Y" then
+                  gosub _updateCareDT
+               endif
+               
+               'if o_ftp = "Y" then
+               gosub _archive
+               'endif
+            else
+               cmd = "mv " + UA_QUEUE + batch_id + "*.xml " + UA_BASE + "error/"
+               rc = $unix(cmd)
+               _e(`"ERRORs detected.  XML Files Moved to: " + UA_BASE + "error/"`)
+            endif
+
+            nextdo = "DONE"
+         case "DONE"
+            gosub frm_End
+            goback
+         case "EXIT" goback
+         case other or !dp
+            nextdo = "MAIN"
+      endselect
+
+      'if $endbutton = "CANCEL" then goback endif
+
+   enddo
+goback
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+frm_Main:
+   $submitopt("on","Next")
+   $cancelopt("on","Cancel")
+   $form()
+   $text("{center}")
+   $text("Batch UA's to CARE","h1")
+   $text("{HR}")
+   $text("ID:") $text(batch_id)
+   $table(1,"tight","width='50%'")
+   $row()
+   $col()   $text("From: ","datatag")
+   $col()   $textbox(o_dt1,"CAL",10,10,"Y")
+
+   $row()
+   $col()   $text("Thru: ","datatag")
+   $col()   $textbox(o_dt2,"CAL",10,10,"Y")
+
+   $row()
+   $col()   $text("Saved List: ","datatag")
+   $col()   $textbox(o_sl,"KF``02",8,8)
+
+   $row()
+   $col()   $text("Options: ","datatag")
+   $col()
+   $checkbox(o_subdate,"Update CMBHS Submission Date?","Y")
+   $br()
+   $checkbox(o_ftp,"FTP","Y")
+   $br()
+   $checkbox(o_test,"CARE Test Mode","Y")
+   $br()
+   $checkbox(o_color,"Row Highlight Mode?","Y")
+   $br()
+   $endtable(1)
+
+   $sendform()
+   if $endbutton = "CANCEL" nextdo = "EXIT", goback endif
+
+   if o_dt2 < o_dt1 then
+      $brmsg("End date cannot be less than begin date",1,"CW","Error")
+      goback
+   endif
+
+   if o_dt1 > $today or o_dt2 > $today then
+      $brmsg("Future dates aren't valid for use.",1,"CW","Error")
+      goback
+   endif
+
+   nextdo = "READ"
+goback
+
+
+frm_End:
+   rc = $email(to[],"UA Batch Messages",err[])
+   if o_ftp = "Y" then
+      if rc_FTP > 0 then
+         rc = $email(to[],"UA Batch FTP Output **ERRORS**",ftp_chat[])
+      else
+         rc = $email(to[],"UA Batch FTP Output",ftp_chat[])
+      endif
+
+      '* write ftp dialogue to unix file
+      T = arch_file + ".ftp"
+      rc = $putfile(ftp_chat[],T)
+      if rc > 0 then
+         rc = $email(to[],"UA Batch putfile err",`$fmt(rc,"Error writing ftp_chat[] to file. rc:99 F:") + T`)
+      endif
+   endif
+
+   $form()
+   $text("{CENTER}Processing / FTP Output:","h1")
+   $text("{/center}")
+   $br(2)
+   $fieldset("Messages",,"error")
+   "LIB-html":render_ul(err[],"datatag")
+   $endfieldset()
+   $br(2)
+
+   $fieldset("FTP Dialogue",,"error")
+   "LIB-html":render_ul(ftp_chat[],"datatag")
+   $endfieldset()
+   $sendform()
+goback
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+_getData:
+
+   $looplimit = 32767
+
+   if cid[] !dp then
+      ts[1] = $ts
+      rc = ua_handle:getOpenRecords(o_dt1,o_dt2,o_sl,uid[],rtype[],cid[])
+      ts[2] = $ts
+   endif
+
+   $form()
+   $text("{center}")
+   $text("Batch UA's to CARE","h1")
+   $br()
+   $text($fmt(o_dt1,o_dt2,"MM/DD/YY - MM/DD/YY"),"h2")
+   $br()
+   $text("FTP: ","datatag")
+   $text(o_ftp)
+   $text(" Test Mode: ","datatag")
+   $text(o_test)
+   if _debug = "Y" then
+      $br()
+      $text("*DEBUG MODE*","error")
+   endif
+   $text("{HR}")
+
+   $bstyle("smlink","smlink")
+   $submit(b_skipall,"Check All")
+   $br()
+   $submit(b_clearall,"Clear All")
+   $br()
+   $submit(b_swap,"Invert")
+   $br()
+   $submit(b_refresh,"Refresh Data")
+   $br()
+   $submit(b_color,"Toggle Color")
+   $text("{HR}")
+
+   if _debug = "Y" then
+      $text($fmt(`(ts[2] - ts[1]) / 100`,"TS: ZZ9.99s"))
+      $br(2)
+   endif
+
+   $text("Records Found: ","datatag")
+   $text($maxarray(cid[]))
+   $br(2)
+
+   $table(1,"tight","border='1'")
+   $row()
+   $col()   $text("Skip","datatag")
+   '$col()   $text("Exclude{BR}Flag","datatag")
+   if _debug = "Y" then
+      $col()   $text("UID","datatag")
+   endif
+   $col()   $text("A/C","datatag")
+   $col()   $text("Client","datatag")
+   $col()   $text("Purp","datatag")
+   $col()   $text("ALOC","datatag")
+   $col()   $text("Asmt DT","datatag")
+   '$col()   $text("Comp DT","datatag")
+   '$col()   $text("Disch DT","datatag")
+   '$col()   $text("Care DT","datatag")
+   $col()   $text("Reg DT","datatag")
+   $col()   $text("DX Date","datatag")
+   $col()   $text("DX CARE","datatag")
+   if _debug = "Y" then
+      $col()   $text("Staff","datatag")
+   endif
+   $col()   $text("Clinic","datatag")
+   $col()   $text("Notes","datatag")
+
+   i = 0
+   do while i++ < $maxarray(cid[])
+      select rtype[i]
+         case "A" gosub _setAdultUA
+         case "C" gosub _setChildUA
+         case other
+            $brmsg(`"Houston, we have a problem. no rtype S:" + $sourceline`,1,"CW")
+            gosub __EXIT
+      endselect
+
+      if uid[i] dp then
+         rc = $dbreaduid(uid[i],2,cid[i],ua_rec,ua_compd,ua_asmtdt,ua_caredt,ua_pur,ua_disdt,ua_excld,ua_s1,ua_s2,ua_s3,ua_aloc,ua_clinic)
+      endif
+      rc = $dbread(2,cid[i],c.reg.sub,c.dxrec,c.dx.caredt,c.dxdate)
+
+      '* don't hold records for crisis or discharge based on last DX
+      '* basically only intake or update
+      if ((ua_pur != "3" and ua_pur != "11") and (c.dx.caredt !dp or `ua_asmtdt - c.dxdate` > 365)) then
+         b_skip[i] = "Y"
+      endif
+
+      if ua_pur != "11" and ua_clinic !dp then
+         b_skip[i] = "Y"
+      endif
+
+      '* re-check the box if the exclude DST is populated
+      'if ua_excld = "Y" then
+      '   b_skip[i] = "Y"
+      'endif
+
+      '* hold if not registered in CARE
+      if c.reg.sub !dp then
+         b_skip[i] = "Y"
+      endif
+
+      $clear(class)
+      if o_color = "Y" then
+         if $mod(i,2) > 0 then
+            class = "myRow bg1"
+         else
+            class = "myRow bg2"
+         endif
+      endif
+
+      $row(class)
+
+      $col()
+      $checkbox(b_skip[i],"","Y")
+
+      '$col()   $text(ua_excld)
+      if _debug = "Y" then
+         $col()
+         if uid[i] !dp then
+            $text("*NO UID*","error")
+         else
+            $text(uid[i])
+         endif
+      endif
+      $col()   $text(rtype[i])
+      $col()   $text(cid[i])
+      $col()   $text(ua_pur)
+      $col()   $text(ua_aloc)
+      $col()   $text($fmt(ua_asmtdt,"MM/DD/YY"))
+      '$col()   $text($fmt(ua_compd,"MM/DD/YY"))
+      '$col()   $text($fmt(ua_disdt,"MM/DD/YY"))
+      '$col()   $text($fmt(ua_caredt,"MM/DD/YY"))
+      $clear(style)
+      if c.reg.sub !dp then
+         style = "bgcolor='red' color='white'"
+      endif
+      $col(,,,,,style)   $text($fmt(c.reg.sub,"MM/DD/YY"))
+      $col()   $text($fmt(c.dxdate,"MM/DD/YY"))
+      style = ""
+      if (ua_pur != "3" and ua_pur != "11") and (c.dx.caredt !dp or `$today - c.dxdate` > 365) then
+         style = "bgcolor='red' color='white'"
+      endif
+      $col(,,,,,style)   $text($fmt(c.dx.caredt,"MM/DD/YY"))
+
+      if _debug = "Y" then
+         $col()
+         $text(`ua_s1 + ", " + ua_s2 + "," + ua_s3`)
+      endif
+
+      $clear(style)
+      if ua_clinic !dp and ua_pur != "11" then
+         style = "bgcolor='red' color='white'"
+      endif
+      $col(,,,,,style)   $text(ua_clinic)
+
+      $col()
+      if ua_s1 dp then
+         rc = $dbread(3,ua_s1,s_cred)
+         if s_cred !dp then $text(`"*CRED: " + ua_s1`,"error") endif
+      endif
+      if ua_s2 dp then
+         rc = $dbread(3,ua_s2,s_cred)
+         if s_cred !dp then $text(`"*CRED: " + ua_s2`,"error") endif
+      endif
+      if ua_s3 dp then
+         rc = $dbread(3,ua_s3,s_cred)
+         if s_cred !dp then $text(`"*CRED: " + ua_s3`,"error") endif
+      endif
+
+      if _debug != "Y" and uid[i] !dp then
+         $text("*NO UID*","error")
+      endif
+
+   enddo
+
+   if o_color = "Y" then
+      $ctag(js)
+   endif
+   $sendform()
+
+   if $endbutton = "CANCEL" then nextdo = "MAIN",goback endif
+   if cid[] !dp then goback endif
+
+   if b_refresh  = "Y" then
+      $clear(b_refresh,b_skip[],uid[],rtype[],cid[])
+      goback
+   endif
+
+   if b_color = "Y" then
+      $clear(b_color)
+      if o_color = "Y" then
+         o_color = "N"
+      else
+         o_color = "Y"
+      endif
+
+      goback
+   endif
+
+   'check all boxes to skip
+   if b_skipall = "Y" then
+      $clear(b_skipall)
+      i = 0
+      do while i++ < $maxarray(cid[])
+         b_skip[i] = "Y"
+      enddo
+      goback
+   endif
+
+   '* clear all checkboxes
+   if b_clearall = "Y" then
+      $clear(b_clearall,b_skip[])
+      goback
+   endif
+
+   'reverse checkbox selection
+   if b_swap = "Y" then
+      $clear(b_swap)
+      i = 0
+      do while i++ < $maxarray(cid[])
+         if b_skip[i] = "Y" then
+            $clear(b_skip[i])
+         else
+            b_skip[i] = "Y"
+         endif
+      enddo
+      goback
+   endif
+
+   '#thumb maybe move this to it's own area?
+   '* remove skipped clients from array
+   tmp[] = cid[]
+   i = 0
+   do while i++ < $maxarray(tmp[])
+      $clear(f_upd)
+      select rtype[i]
+         case "A" gosub _setAdultUA
+         case "C" gosub _setChildUA
+         case other
+            $brmsg(`"Houston, we have a problem. no rtype S:" + $sourceline`,1,"CW")
+            gosub __EXIT
+      endselect
+
+      if uid[i] !dp then
+         $clear(tmp[i],rtype[i])
+      else
+         if b_skip[i] = "Y" then
+            $clear(tmp[i],uid[i],rtype[i])
+         endif
+      endif
+   enddo
+
+   (void)$arrCompress(tmp[],uid[],rtype[])
+   '(void)$sortu(tmp[],uid[])
+   cid[] = tmp[]
+
+   nextdo = "PROC"
+
+goback
+
+_xmlgen:
+   gosub _BATCHID
+
+   $loopcount = 0
+   $clear(xml-opt,xml-client[],xml-uid[])
+   'loop through - generate a separate file for each type
+   'ansa, cans, baby cans
+   i = 0
+   do while i++ < $maxarray(cid[])
+      if rtype[i] = "A" then
+         (void)$arrPush(xml-client[],cid[i])
+         (void)$arrPush(xml-uid[],uid[i])
+      endif
+   enddo
+
+   if xml-client[] dp then
+      FileOut = UA_QUEUE + batch_id + "_ansa.xml"
+      xml-opt = "Template`/c0/forms/ansa.xml;FileOut`" + FileOut
+      call UA_XML_SCR(,xml-opt,xml-client[],retcode,xml-uid[])
+      gosub _xmlverify
+   endif
+
+   '*6-17 cans
+   $loopcount = 0
+   $clear(xml-opt,xml-client[],xml-uid[])
+   gosub _setChildUA
+
+   i = 0
+   do while i++ < $maxarray(cid[])
+      if rtype[i] = "C" then
+         rc = $dbreaduid(uid[i],2,cid[i],ua_rec,ua_compd,ua_asmtdt,ua_caredt,ua_canstype)
+         if ua_canstype = "1" then
+            (void)$arrPush(xml-client[],cid[i])
+            (void)$arrPush(xml-uid[],uid[i])
+         endif
+      endif
+   enddo
+
+   if xml-client[] dp then
+      FileOut = UA_QUEUE + batch_id + "_cans.xml"
+      xml-opt = "Template`/c0/forms/cans617.xml;FileOut`" + FileOut
+      call UA_XML_SCR(,xml-opt,xml-client[],retcode,xml-uid[])
+      gosub _xmlverify
+   endif
+
+   '*3-5 cans
+   $loopcount = 0
+   $clear(xml-opt,xml-client[],xml-uid[])
+   gosub _setChildUA
+
+   i = 0
+   do while i++ < $maxarray(cid[])
+      if rtype[i] = "C" then
+         rc = $dbreaduid(uid[i],2,cid[i],ua_rec,ua_compd,ua_asmtdt,ua_caredt,ua_canstype)
+         if ua_canstype = "2" then
+            (void)$arrPush(xml-client[],cid[i])
+            (void)$arrPush(xml-uid[],uid[i])
+         endif
+      endif
+   enddo
+
+   if xml-client[] dp then
+      FileOut = UA_QUEUE + batch_id + "_cansbaby.xml"
+      xml-opt = "Template`/c0/forms/cansbaby.xml;FileOut`" + FileOut
+      call UA_XML_SCR(,xml-opt,xml-client[],retcode,xml-uid[])
+      gosub _xmlverify
+   endif
+
+   '#thumb - verifyXML
+goback
+
+_xmlverify:
+   $clear(x[])
+   VerifyBatch(FileOut,x[1],x[2],x[3],x[4],x[5])
+   if x[1] != "1" then
+      _e("Starting Batch Tag Missing")
+   endif
+   
+   if x[2] != "1" then
+      _e("Ending Batch Tag Missing")
+   endif
+   
+   if $num(x[3]) != $maxarray(xml-client[]) then
+      _e($fmt(x[3],$maxarray(xml-client[]),"LocalCaseNbr Mismatch: ~~~ vs ZZ9"))
+   endif
+   
+   if $num(x[4]) != $maxarray(xml-client[]) then
+      _e($fmt(x[4],$maxarray(xml-client[]),"Starting Transaction Mismatch: ~~~ vs ZZ9"))
+   endif
+
+   if $num(x[5]) != $maxarray(xml-client[]) then
+      _e($fmt(x[5],$maxarray(xml-client[]),"Ending Transaction Mismatch: ~~~ vs ZZ9"))
+   endif
+goback
+
+_updateCareDT:
+   i = 0
+   do while i++ < $maxarray(cid[])
+      select rtype[i]
+         case "A" gosub _setAdultUA
+         case "C" gosub _setChildUA
+         case other
+            $brmsg("ERROR - _updateCareDT - UA type rtype not recognized",1,"CW")
+            $brmsg(`"CID: " + cid[i] + " RTYPE:" + rtype[i]`,1,"CW")
+      endselect
+
+      $dblock()
+      rc = $dbreaduid(uid[i],2,cid[i],ua_rec,ua_caredt)
+      ua_caredt = $today
+      rc = $dbupdateuid(uid[i],2,cid[i],ua_rec,ua_caredt)
+      if rc > 0 then
+         $brmsg($fmt(rc,cid[i],"dbupdateuid error rc:99 CID:~~~~~~"),1,"CW")
+      endif
+   enddo
+
+goback
+
+_ftp:
+   $clear(ftp[],i,rc_FTP)
+   if o_ftp = "Y" then
+      if o_test = "Y" then
+         ftp_dir = test_dir
+      endif
+      ftp[++i] = "lcd " + UA_QUEUE
+      ftp[++i] = "put " + batch_id + "*.xml"
+
+      rc_FTP = $sftp(ftp[],ftp_site,ftp_login,ftp_pass,UA_QUEUE,ftp_dir,ftp_chat[])
+      if rc_FTP > 0 then
+         _e($fmt(rc_FTP,"** FTP ERRORS RC:99 **"))
+      endif
+   else
+      _e("** NOTICE FTP IS NOT ENABLED **")
+   endif
+
+goback
+
+_archive:
+
+   if _debug = "Y" or $sysname != d_ProdSys then
+      _e("Not in Production - skipping archiving")
+      nextdo = "DONE"
+      goback
+   endif
+
+   arch_path = UA_ARCH + $fmt($today,"YYYY")
+   if $checkfile(arch_path) > 0 then
+      cmd = "mkdir " + arch_path
+      rc = $unix(cmd)
+      if rc > 0 then
+         rc = $email(to[],"UA Batch Arch Dir Error",`"Error creating archive dir: " + arch_path`)
+         $brmsg("Error creating archive directory",1,"CW")
+         goto __EXIT
+      endif
+   endif
+
+   cmd = "mv " + UA_QUEUE + batch_id + "*.xml " + arch_path
+   rc = $unix(cmd)
+   if rc > 0 then
+      rc = $email(to[],"UA Batch Copy Error",`"Error archiving file: " + arch_file`)
+      $brmsg("Error during copy",1,"CW")
+      goto __EXIT
+   endif
+
+   _e(`"Files archived to " + arch_path`)
+
+   nextdo = "DONE"
+goback
+
+_setAdultUA:
+   $setvarname(ua_rec,"C.ANSA.REC")
+   $setvarname(ua_compd,"C.ANSA.COMPD")
+   $setvarname(ua_asmtdt,"C.ANSA.DATE")
+   $setvarname(ua_caredt,"C.ANSA.CAREDT")
+   $setvarname(ua_pur,"C.ANSA.TYPE")
+   $setvarname(ua_disdt,"C.ANSA.DISDT")
+   $setvarname(ua_excld,"")
+   $setvarname(ua_s1,"C.ANSA.STAFF")
+   $setvarname(ua_s2,"")
+   $setvarname(ua_s3,"C.ANSA.ALOCSTAFF")
+   '$setvarname(ua_s2,"C.ANSA.STAFF2")
+   '$setvarname(ua_s3,"C.ANSA.TIMAS")
+   $setvarname(ua_aloc,"C.ANSA.ALOC")
+   $setvarname(ua_disch,"C.ANSA.DISCH")
+   $setvarname(ua_request,"C.ANSA.REQUEST")
+   $setvarname(ua_clinic,"C.ANSA.CLINIC")
+   $setvarname(ua_canstype,"")
+goback
+
+_setChildUA:
+   $setvarname(ua_rec,"C.CANS.REC")
+   $setvarname(ua_compd,"C.CANS.COMPD")
+   $setvarname(ua_asmtdt,"C.CANS.DATE")
+   $setvarname(ua_caredt,"C.CANS.CAREDT")
+   $setvarname(ua_pur,"C.CANS.TYPE")
+   $setvarname(ua_disdt,"C.CANS.DISDT")
+   $setvarname(ua_excld,"")
+   $setvarname(ua_s1,"C.CANS.STAFF")
+   $setvarname(ua_s2,"")
+   $setvarname(ua_s3,"C.CANS.ALOCSTAFF")
+   $setvarname(ua_aloc,"C.CANS.ALOC")
+   $setvarname(ua_disch,"C.CANS.DISCH")
+   $setvarname(ua_request,"")
+   $setvarname(ua_clinic,"C.CANS.CLINIC")
+   $setvarname(ua_canstype,"C.CANS.CANSTYPE")
+goback
+
+__INIT:
+
+   $setvarname(s_cred,"S.TRR.CRED")
+
+   if $checkfile(UA_BASE) > 0 then
+      $brmsg("ERROR - UA_BASE missing",1,"CW")
+      return
+   endif
+
+   if $checkfile(UA_QUEUE) > 0 then
+      $brmsg("ERROR - UA_QUEUE missing",1,"CW")
+      return
+   endif
+
+   if $bui != "Y" then
+      $errmsg1 = "** RRROR ** THIS SCRIPT MUST BE RUN IN BUI"
+      $endscript()
+   endif
+
+   if parmfile !dp then
+      parmfile = UA_PARM
+   endif
+
+   if $uc(option) = "TXB" then
+      T = "TXBATCH4"
+      if $today >= 09/05/2012 then
+         T = "TXBATCH5"
+      endif
+
+      if _debug = "Y" and $oper = "roberte" then
+         T = "TXBATCH5"
+      endif
+
+      rc = $misprog(T,parmfile)
+      if rc > 0 then
+         $brmsg($fmt(rc,T,"ERROR EXECUTING CARE BATCHING. RC:99 PROG: ~~~~~~~~~~"),1,"CW")
+      endif
+
+      return
+   endif
+
+   if $loadlib(ua_handle,"lib_UABATCH") > 0 then
+      $brmsg("Error loading lib_UABATCH",1,"CW")
+      return
+   endif
+
+   if $loadlib(parm,"lib_PARM") > 0 then
+      $brmsg("Error loading lib_PARM",1,"CW")
+      return
+   endif
+
+   if $loadlib(proc,"lib_PROCMGR") > 0 then
+      $brmsg("Error loading lib_PROCMGR",1,"CW")
+      return
+   endif
+
+   if $loadlib(l_unix,"lib_UNIX") > 0 then
+      $brmsg("Error loading lib_UNIX",1,"CW")
+      return
+   endif
+
+   trr_date = "lib_USREVENT":getTrrCutOver()
+   proc_key = $scriptid
+   o_dt1 = $today - 30
+   o_dt2 = $today - 1
+   o_subdate = "Y"
+
+   if o_dt1 < trr_date then
+      o_dt1 = trr_date
+   endif
+
+   if o_dt1 < 1/1/2014 then
+      o_dt1 = 9/1/2013
+   endif
+
+   if proc:getProc(proc_key) = 0 then
+      proc:displayInfo(proc_key)
+      '$brmsg(`"END: " + $endbutton`,1,"CW")
+      if $endbutton = "CANCEL" then
+         return
+      endif
+      rc = proc:removeProc(proc_key)
+   endif
+
+   rc = proc:saveProc(proc_key)
+   if rc > 0 then
+      $brmsg($fmt(rc,"Error saving process key. rc:99"),1,"CW")
+      return
+   endif
+
+   GetParm(parmfile)
+
+   (void)$arrPush(to[],UA_EMAIL)
+   '* setup email vars
+   if o_email dp and $find(o_email,to[]) = 0 then
+      (void)$arrPush(to[],o_email)
+   endif
+
+   if _debug = "Y" then
+      o_test = "Y"
+      o_ftp  = "N"
+      $clear(to[],T)
+
+      "lib_STAFF":get_staff_email($operstaffid,T)
+      if T dp then
+         (void)$arrPush(to[],T)
+      endif
+   endif
+
+   if $sysname != d_ProdSys then
+      o_ftp    = "N"
+      o_test   = "Y"
+   endif
+
+   $brmsg("Syncing Staff Credentials",1,"C","Please Wait.")
+   ua_handle:syncStaffCred()
+
+goback
+
+__EXIT:
+   gosub _cleanup
+   return
+goback
+
+_cleanup:
+   rc = proc:removeProc(proc_key)
+   if rc > 0 then
+      $brmsg($fmt(rc,"Error removing process file. RC:99"),1,"CW")
+   endif
+
+   rc = $unloadlib(ua_handle)
+   rc = $unloadlib(parm)
+   rc = $unloadlib(proc)
+
+   $cleartempfile(tFile)
+
+goback
+
+'* generate a unique batchID avoid conflicts with other files
+_BATCHID:
+   $clear(i,batch_id)
+
+   batch_count = 99
+
+   do while batch_count > 0
+      batch_id = $fmt($today,$timenow,"YYYYMMDD_HHMM")
+      if $find(" ",batch_id) > 0 then
+         batch_id = $replace(" ","_",batch_id)
+      endif
+
+      if ++i > 1 then
+         batch_id += $fmt(i,"-99")
+      endif
+
+      l_unix:getFullFileCount(UA_BASE, batch_count, batch_id)
+   enddo
+goback
+
+__preload:
+%preload js line-ending(cr)
+<script src="/cmhcbui/cmhcbuilocal/js/jquery-1.5.1.min.js"></script>
+
+<script>
+   $(document).ready(function()
+   {
+      $('.myRow').hover(function() {
+         $(this).children().css('backgroundColor', '#ffdc87');
+      }, function() {
+         $(this).children().css('backgroundColor', '');
+      });
+
+      $('.myRow').click(function() {
+          $(this).toggleClass('clicked');
+          $(this).children().toggleClass('clicked');
+          $(this).siblings().removeClass('clicked');
+      });
+
+   });
+
+</script>
+
+<style>
+   .myRow {
+   }
+
+   .clicked {
+       background-color: lightgreen;
+   }
+</style>
+%endpreload
+goback
+
+
+end CAREBT_UA
+
+%include inc_GetParm
+
+dynamic FUNCTION _e(str) is null
+   str      is x
+
+   if str dp then
+      (void)$arrPush(err[],str)
+   endif
+end _e
+
+dynamic FUNCTION VerifyBatch(FileName,StartBatch,EndBatch,ClientCount,StartTrans,EndTrans) is null
+   FileName    is x
+   StartBatch  is x
+   EndBatch    is x
+   ClientCount is x
+   StartTrans  is x
+   EndTrans    is x
+   rc          is b
+
+   $allowupdate(StartBatch,EndBatch,ClientCount,StartTrans,EndTrans)
+
+   cmd         is x
+   cmd = "grep -c -E '\<Batch' " + FileName
+   rc = $unix(cmd,Startbatch)
+   '$acpt()
+
+   cmd = "grep -c -E '\</Batch' " + FileName
+   rc = $unix(cmd,EndBatch)
+
+   cmd = "grep -c -E '\<LocalCaseNbr' " + FileName
+   rc = $unix(cmd,ClientCount)
+
+   '**
+   'we have to use additional commands to ignore TransactionType due to
+   'not being able to put the ">" character in $unix
+   '**
+
+   cmd = "grep -E '\<Transaction' " + FileName + "| grep -v TransactionType|wc -l|awk '{print $1}'"
+   rc = $unix(cmd,StartTrans)
+
+   cmd = "grep -E '\</Transaction' " + FileName + "| grep -v TransactionType|wc -l|awk '{print $1}'"
+   rc = $unix(cmd,EndTrans)
+
+end VerifyBatch
+
