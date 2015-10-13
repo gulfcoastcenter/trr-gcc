@@ -253,9 +253,6 @@ start CAREBT_UA(parmfile,option)
    ua_clinic   is x
    ua_canstype is x
 
-   'c.dxrec     is r
-   'c.dxdate    is d
-   'c.dx.caredt is d
    lib-dx      is b
    dx_date     is d
    dx_batchdt  is d
@@ -530,12 +527,9 @@ _getData:
       rc = $dbread(2,cid[i],c.reg.sub) ',c.dxrec,c.dx.caredt,c.dxdate)
 
       lib-dx:getclientdx(cid[i], $today,,dx_date,,,,,,,, dx_batchdt)
-      'dx_batchdt = dx_batchdt
-      'lib-dx:getClientdx(cid[i], $today,,dx_date,,,,,,,dx_batchdt)
 
       '* don't hold records for crisis or discharge based on last DX
       '* basically only intake or update
-      'if ((ua_pur != "3" and ua_pur != "11") and (c.dx.caredt !dp or `ua_asmtdt - c.dxdate` > 365)) then
       if ((ua_pur != "3" and ua_pur != "11") and (dx_batchdt !dp or `ua_asmtdt - dx_date` > 365)) then
          b_skip[i] = "Y"
       endif
@@ -593,7 +587,6 @@ _getData:
       $col()   $text($fmt(dx_date,"MM/DD/YY"))
       style = ""
       if (ua_pur != "3" and ua_pur != "11") and (dx_batchdt !dp or `$today - dx_date` > 365) then
-      'if (ua_pur != "3" and ua_pur != "11") and (c.dx.caredt !dp or `$today - c.dxdate` > 365) then
          style = "bgcolor='red' color='white'"
       endif
       $col(,,,,,style)   $text($fmt(dx_batchdt,"MM/DD/YY"))
