@@ -253,9 +253,13 @@ start CAREBT_UA(parmfile,option)
    ua_clinic   is x
    ua_canstype is x
 
-   c.dxrec     is r
-   c.dxdate    is d
-   c.dx.caredt is d
+   'c.dxrec     is r
+   'c.dxdate    is d
+   'c.dx.caredt is d
+   lib-dx      is b
+   dx_date     is d
+   dx_batchdt  is d
+
    s_cred   is x
    c.reg.sub   is d
 
@@ -523,11 +527,16 @@ _getData:
       if uid[i] dp then
          rc = $dbreaduid(uid[i],2,cid[i],ua_rec,ua_compd,ua_asmtdt,ua_caredt,ua_pur,ua_disdt,ua_excld,ua_s1,ua_s2,ua_s3,ua_aloc,ua_clinic)
       endif
-      rc = $dbread(2,cid[i],c.reg.sub,c.dxrec,c.dx.caredt,c.dxdate)
+      rc = $dbread(2,cid[i],c.reg.sub) ',c.dxrec,c.dx.caredt,c.dxdate)
+
+      lib-dx:getclientdx(cid[i], $today,,dx_date,,,,,,,, dx_batchdt)
+      'dx_batchdt = dx_batchdt
+      'lib-dx:getClientdx(cid[i], $today,,dx_date,,,,,,,dx_batchdt)
 
       '* don't hold records for crisis or discharge based on last DX
       '* basically only intake or update
-      if ((ua_pur != "3" and ua_pur != "11") and (c.dx.caredt !dp or `ua_asmtdt - c.dxdate` > 365)) then
+      'if ((ua_pur != "3" and ua_pur != "11") and (c.dx.caredt !dp or `ua_asmtdt - c.dxdate` > 365)) then
+      if ((ua_pur != "3" and ua_pur != "11") and (dx_batchdt !dp or `ua_asmtdt - dx_date` > 365)) then
          b_skip[i] = "Y"
       endif
 
@@ -581,12 +590,13 @@ _getData:
          style = "bgcolor='red' color='white'"
       endif
       $col(,,,,,style)   $text($fmt(c.reg.sub,"MM/DD/YY"))
-      $col()   $text($fmt(c.dxdate,"MM/DD/YY"))
+      $col()   $text($fmt(dx_date,"MM/DD/YY"))
       style = ""
-      if (ua_pur != "3" and ua_pur != "11") and (c.dx.caredt !dp or `$today - c.dxdate` > 365) then
+      if (ua_pur != "3" and ua_pur != "11") and (dx_batchdt !dp or `$today - dx_date` > 365) then
+      'if (ua_pur != "3" and ua_pur != "11") and (c.dx.caredt !dp or `$today - c.dxdate` > 365) then
          style = "bgcolor='red' color='white'"
       endif
-      $col(,,,,,style)   $text($fmt(c.dx.caredt,"MM/DD/YY"))
+      $col(,,,,,style)   $text($fmt(dx_batchdt,"MM/DD/YY"))
 
       if _debug = "Y" then
          $col()
@@ -968,6 +978,11 @@ __INIT:
 
    if $loadlib(l_unix,"lib_UNIX") > 0 then
       $brmsg("Error loading lib_UNIX",1,"CW")
+      return
+   endif
+
+   if $loadlib(lib-dx, "lib_DX10") > 0 then
+      $brmsg("Error loading lib_DX10", 1, "CW")
       return
    endif
 
